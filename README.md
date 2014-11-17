@@ -6,6 +6,9 @@ We built the first version of this class to allow us to return large messages fr
 
 Usage
 ---
+Install from [Nuget](https://www.nuget.org/packages/SmallBlockMemoryStream/) with the console command `Install-Package SmallBlockMemoryStream`.
+
+For the most part, use the class just like a `MemoryStream`. It only has two constructors:
 ```cs
 using Aethon.IO;
 
@@ -13,8 +16,15 @@ public class MyService()
 {
   public Stream GetData()
   {
-    var result = new SmallBlockMemoryStream();
-    ...use just like a MemoryStream (see caveats below)...
+    var result = new SmallBlockMemoryStream(); // start with an empty, zero-capacity stream
+    // ...write, read, position, etc...
+    return result;
+  }
+  
+  public Stream GetData(long howMuch)
+  {
+    var result = new SmallBlockMemoryStream(howMuch); // preallocate room for the stream
+    // ...write, read, position, etc...
     return result;
   }
 }
