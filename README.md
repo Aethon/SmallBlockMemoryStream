@@ -1,7 +1,7 @@
 SmallBlockMemoryStream
 ======================
 
-This assembly exposes a single class, `SmallBlockMemoryStream`, that is intended to be a drop-in replacement for the BCL `MemoryStream` class. The need for this class came to light at [Dow Jones](http://dowjones.com) while performance tuning high-capacity, high-availablity market data services for [MarketWatch](http://marketwatch.com), [The Wall Street Journal](http://online.wsj.com) and [Barron's](http://online.barrons.com). These services often return very large response messages, and preparing those messages was producing memory allocations on the [Large Object Heap](http://msdn.microsoft.com/en-us/magazine/cc534993.aspx) (LOH). When the LOH was eventually compacted, our services would pause for several seconds, and that would lead to mayhem in the data center (several seconds is an eternity to a high-capacity system).
+This assembly exposes a single class, `SmallBlockMemoryStream`, that is intended to be a drop-in replacement for the BCL [`MemoryStream`](http://msdn.microsoft.com/en-us/library/system.io.memorystream(v=vs.110\).aspx) class. The need for this class came to light at [Dow Jones](http://dowjones.com) while performance tuning high-capacity, high-availablity market data services for [MarketWatch](http://marketwatch.com), [The Wall Street Journal](http://online.wsj.com) and [Barron's](http://online.barrons.com). These services often return very large response messages, and preparing those messages was producing memory allocations on the [Large Object Heap](http://msdn.microsoft.com/en-us/magazine/cc534993.aspx) (LOH). When the LOH was eventually compacted, our services would pause for several seconds, and that would lead to mayhem in the data center (several seconds is an eternity to a high-capacity system).
 
 We built the first version of this class to allow us to return large messages from WebApi actions without invoking the LOH. Along with configuration settings for the legacy WCF services, we were able eliminate the LOH from the picture entirely.
 
@@ -27,7 +27,7 @@ The `SmallBlockMemoryStream` does not inherit from `MemoryStream` because:
   - it would have increased the size of the implementation to carry it along as a base class, and
   - there are a few methods on `MemoryStream` that do not make sense in this context (`GetBuffer` and `ToArray`)
   
-And that brings up a good point about these two classes: `SmallBlockMemoryStream` is not intended as a general replacement for `MemoryStream`. It is intended as a replacement when certain performce features are desired. In many cases, `MemoryStream` will be more performant than `SmallBlockMemoryStream`:
+And that brings up a good point about these two classes: `SmallBlockMemoryStream` is not intended as a general replacement for `MemoryStream`. It is intended as a replacement when certain performance features are desired. In many cases, `MemoryStream` will be more performant than `SmallBlockMemoryStream`:
 
 If|Then
 -------------------|-------------------------
