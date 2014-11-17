@@ -36,5 +36,10 @@ namespace Aethon.IO
         {
             return new ArgumentException(string.Format("Unknown origin: '{0}'", origin), parameterName);
         }
+
+        public static Exception StreamCapacityLessThanLength(string parameterName)
+        {
+            return new ArgumentOutOfRangeException(parameterName, "Cannot set the capacity of the stream smaller than the length");
+        }
     }
 }

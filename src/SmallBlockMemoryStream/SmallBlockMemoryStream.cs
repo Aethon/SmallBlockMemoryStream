@@ -17,12 +17,25 @@ namespace Aethon.IO
 
         private long _length;
         private long _capacity;
+        private long _position;
 
         private int _cursorIndex;
         private long _cursorBase;
         private int _cursorOffset;
 
         private bool _closed;
+
+        public SmallBlockMemoryStream()
+        {}
+        
+        public SmallBlockMemoryStream(long capacity)
+        {
+            if (capacity < 0)
+                throw __Error.NeedNonNegNumber("capacity");
+
+            if (capacity > 0)
+                ExpandCapacity(capacity, true);
+        }
 
         public override bool CanRead
         {
@@ -63,7 +76,7 @@ namespace Aethon.IO
                 if (_closed)
                     throw __Error.StreamIsClosed();
                 
-                return _cursorBase + _cursorOffset;
+                return _position;
             }
             set
             {
@@ -71,8 +84,63 @@ namespace Aethon.IO
                     throw __Error.StreamIsClosed();
                 if (value < 0)
                     throw __Error.NeedNonNegNumber(null);
+
+                _position = value;
+            }
+        }
+
+        public virtual long Capacity
+        {
+            get
+            {
+                if (_closed)
+                    throw __Error.StreamIsClosed();
                 
-                SetPosition(value);
+                return _capacity;
+            }
+
+            set
+            {
+                if (_closed)
+                    throw __Error.StreamIsClosed();
+                if (value < Length)
+                    throw __Error.StreamCapacityLessThanLength(null);
+
+                if (value == 0)
+                {
+                    _blocks = null;
+                    _blockCount = 0;
+                    _capacity = 0;
+                    return;
+                }
+
+                var capacity = _capacity;
+                if (value > capacity)
+                {
+                    ExpandCapacity(value, true);
+                }
+                else if (value < capacity)
+                {
+                    // truncate to the specified size
+                    SetCursor(value);
+                    var cursorIndex = _cursorIndex;
+                    var cursorOffset = _cursorOffset;
+                    var blocks = _blocks;
+                    var block = blocks[cursorIndex];
+                    if (cursorOffset < block.Length)
+                    {
+                        var newBlock = new byte[cursorOffset];
+                        Buffer.BlockCopy(block, 0, newBlock, 0, newBlock.Length);
+                        blocks[cursorIndex] = newBlock;
+                    }
+                    var blockCount = _blockCount;
+                    for (var i = cursorIndex + 1; i < blockCount; i++)
+                        blocks[i] = null;
+                    _blocks = blocks;
+                    _blockCount = cursorIndex + 1;
+                    _capacity = value;
+                    SetCursor(_position);
+                }
             }
         }
 
@@ -89,11 +157,18 @@ namespace Aethon.IO
             if (buffer.Length - offset < count)
                 throw __Error.InvalidOffset("offset");
 
-            if (count == 0) return 0;
+            var position = _position;
+            if (count == 0 || position >= _length) return 0;
 
-            var cursorIndex = _cursorIndex;
-            var cursorOffset = _cursorOffset;
             var cursorBase = _cursorBase;
+            var cursorOffset = _cursorOffset;
+            if (position != cursorBase + cursorOffset)
+            {
+                SetCursor(position);
+                cursorBase = _cursorBase;
+                cursorOffset = _cursorOffset;
+            }
+            var cursorIndex = _cursorIndex;
 
             var read = 0;
             var toRead = _length - cursorBase - cursorOffset;
@@ -118,6 +193,7 @@ namespace Aethon.IO
             _cursorIndex = cursorIndex;
             _cursorOffset = cursorOffset;
             _cursorBase = cursorBase;
+            _position = cursorBase + cursorOffset;
 
             return read;
         }
@@ -127,12 +203,19 @@ namespace Aethon.IO
             if (_closed)
                 throw __Error.StreamIsClosed();
 
-            var cursorOffset = _cursorOffset;
-            var cursorBase = _cursorBase;
-            if (cursorBase + cursorOffset >= _length)
-                return -1;
+            var position = _position;
+            if (position >= _length) return -1;
 
+            var cursorBase = _cursorBase;
+            var cursorOffset = _cursorOffset;
+            if (position != cursorBase + cursorOffset)
+            {
+                SetCursor(position);
+                cursorBase = _cursorBase;
+                cursorOffset = _cursorOffset;
+            }
             var cursorIndex = _cursorIndex;
+
             var block = _blocks[cursorIndex];
             var result = block[cursorOffset++];
             
@@ -144,7 +227,8 @@ namespace Aethon.IO
                 cursorOffset = 0;
             }
             _cursorOffset = cursorOffset;
-            
+            _position = _cursorBase + cursorOffset;
+
             return result;
         }
 
@@ -162,7 +246,7 @@ namespace Aethon.IO
                         throw __Error.SeekBeforeBegin();
                     break;
                 case SeekOrigin.Current:
-                    newPos = _cursorBase + _cursorOffset + offset;
+                    newPos = _position + offset;
                     if (newPos < 0)
                         throw __Error.SeekBeforeBegin();
                     break;
@@ -175,7 +259,7 @@ namespace Aethon.IO
                     throw __Error.UnknownSeekOrigin(origin, "origin");
             }
 
-            return SetPosition(newPos);
+            return _position = newPos;
         }
 
         public override void SetLength(long value)
@@ -185,8 +269,9 @@ namespace Aethon.IO
             if (value < 0)
                 throw __Error.NeedNonNegNumber("value");
 
-            EnsureCapacity(value);
-            if (value < _length)
+            if (value > _capacity)
+                ExpandCapacity(value);
+            else if (value < _length)
             {
                 // zero out the area we are "discarding"
                 var index = 0;
@@ -210,8 +295,11 @@ namespace Aethon.IO
                     index++;
                 } while (count > 0);
 
-                if (value < _cursorBase + _cursorOffset)
-                    SetPosition(value);
+                if (value < _position)
+                {
+                    _position = value;
+                    SetCursor(value);
+                }
             }
             _length = value;
         }
@@ -231,9 +319,18 @@ namespace Aethon.IO
 
             if (count == 0) return;
 
-            var cursorOffset = _cursorOffset;
+            var position = _position;
+            if (position + count > _capacity)
+                ExpandCapacity(position + count);
+
             var cursorBase = _cursorBase;
-            EnsureCapacity(cursorBase + cursorOffset + count);
+            var cursorOffset = _cursorOffset;
+            if (position != cursorBase + cursorOffset)
+            {
+                SetCursor(position);
+                cursorBase = _cursorBase;
+                cursorOffset = _cursorOffset;
+            }
 
             var cursorIndex = _cursorIndex;
             do
@@ -256,9 +353,10 @@ namespace Aethon.IO
             _cursorOffset = cursorOffset;
             _cursorBase = cursorBase;
 
-            var position = cursorBase + cursorOffset;
+            position = cursorBase + cursorOffset;
             if (position > _length)
                 _length = position;
+            _position = position;
         }
 
         public override void WriteByte(byte value)
@@ -266,9 +364,18 @@ namespace Aethon.IO
             if (_closed)
                 throw __Error.StreamIsClosed();
 
-            var cursorOffset = _cursorOffset;
+            var position = _position;
+            if (position + 1 > _capacity)
+                ExpandCapacity(position + 1);
+
             var cursorBase = _cursorBase;
-            EnsureCapacity(cursorBase + cursorOffset + 1);
+            var cursorOffset = _cursorOffset;
+            if (position != cursorBase + cursorOffset)
+            {
+                SetCursor(position);
+                cursorBase = _cursorBase;
+                cursorOffset = _cursorOffset;
+            }
 
             var cursorIndex = _cursorIndex;
 
@@ -287,9 +394,26 @@ namespace Aethon.IO
             _cursorOffset = cursorOffset;
             _cursorBase = cursorBase;
 
-            var position = cursorBase + cursorOffset;
+            position = cursorBase + cursorOffset;
             if (position > _length)
                 _length = position;
+            _position = position;
+        }
+
+        public virtual void WriteTo(Stream stream)
+        {
+            if (stream == null)
+                throw __Error.NullArgument("stream");
+            if (_closed)
+                throw __Error.StreamIsClosed();
+            var toWrite = _length;
+            for (var i = 0; toWrite > 0; i++)
+            {
+                var block = _blocks[i];
+                var count = (int)(toWrite > block.Length ? block.Length : toWrite);
+                stream.Write(block, 0, count);
+                toWrite -= count;
+            }
         }
 
         public int[] GetAllocationSizes()
@@ -314,83 +438,89 @@ namespace Aethon.IO
             base.Dispose(disposing);
         }
 
-        private long SetPosition(long position)
+        private void SetCursor(long position)
         {
-            if (position > _length)
-            {
-                EnsureCapacity(position);
-                _length = position;
-            }
-
             var cursorBase = 0;
             var cursorIndex = 0;
-            var cursorOffset = position;
+            var blocks = _blocks;
             while (cursorIndex < _blockCount)
             {
-                var blockLength = _blocks[cursorIndex].Length;
-                if (cursorOffset < blockLength) break;
+                var blockLength = blocks[cursorIndex].Length;
+                if (position < blockLength) break;
                 cursorBase += blockLength;
                 cursorIndex++;
-                cursorOffset -= blockLength;
+                position -= blockLength;
             }
             _cursorIndex = cursorIndex;
             _cursorBase = cursorBase;
-            _cursorOffset = (int)cursorOffset;
-
-            return position;
+            _cursorOffset = (int)position;
         }
 
-        private void EnsureCapacity(long newCapacity)
+        private void ExpandCapacity(long newCapacity, bool allocateExactly = false)
         {
             var capacity = _capacity;
-            if (capacity >= newCapacity)
-                return;
-
-            var blockCount = _blockCount;
-            var blocks = _blocks;
 
             // determine required allocations based on the MemoryStream algorithm
-            var extraRequired = newCapacity - capacity;
-            var toAllocate = extraRequired > MinBlockSize ? extraRequired : MinBlockSize;
-            if (capacity > toAllocate)
-                toAllocate = capacity; // this effects the doubling-algorithm from MemoryStream
-            int newBlocks;
-            int newBlockSize;
+            var toAllocate = newCapacity - capacity;
+            if (!allocateExactly)
+            {
+                toAllocate = toAllocate > MinBlockSize ? toAllocate : MinBlockSize;
+                if (capacity > toAllocate)
+                    toAllocate = capacity; // this effects the doubling-algorithm from MemoryStream
+            }
+            var bigBlocks = 0;
+            var tailBlockSize = 0;
             if (toAllocate <= MaxBlockSize)
             {
-                newBlockSize = (int)toAllocate;
-                newBlocks = 1;
+                tailBlockSize = (int)toAllocate;
             }
             else
             {
-                newBlockSize = MaxBlockSize;
-                newBlocks = (int)(toAllocate / MaxBlockSize);
-                var mod = toAllocate % MaxBlockSize;
-                if (mod != 0)
-                    newBlocks++;
+                bigBlocks = (int) (toAllocate/MaxBlockSize);
+                var extra = (int)(toAllocate - bigBlocks*MaxBlockSize);
+                if (allocateExactly)
+                    tailBlockSize = extra;
+                else if (extra > 0)
+                    bigBlocks++;
             }
 
             // extend the block array as necessary
+            var blocks = _blocks;
+            var blockCount = _blockCount;
+            var totalBlocksRequired = blockCount + bigBlocks + (tailBlockSize > 0 ? 1 : 0);
             if (blocks == null)
             {
-                var count = newBlocks > StartBlockCount ? newBlocks : StartBlockCount;
-                blocks = new byte[count][];
+                var n = StartBlockCount;
+                while (n < totalBlocksRequired)
+                    n *= 2;
+                blocks = new byte[n][];
                 _blocks = blocks;
             }
-            else if (blockCount + newBlocks > _blocks.Length)
+            else if (totalBlocksRequired > _blocks.Length)
             {
-                var nextblocks = new byte[_blocks.Length * 2][];
+                var n = blocks.Length;
+                while (n < totalBlocksRequired)
+                    n *= 2;
+                var nextblocks = new byte[n][];
                 Array.Copy(blocks, nextblocks, blocks.Length);
                 blocks = nextblocks;
                 _blocks = blocks;
             }
 
-            // create the actual blocks
-            for (var i = 0; i < newBlocks; i++)
-                blocks[blockCount++] = new byte[newBlockSize];
+            // create the big blocks
+            for (var i = 0; i < bigBlocks; i++)
+            {
+                blocks[blockCount++] = new byte[MaxBlockSize];
+                capacity += MaxBlockSize;
+            }
+            if (tailBlockSize > 0)
+            {
+                blocks[blockCount++] = new byte[tailBlockSize];
+                capacity += tailBlockSize;
+            }
 
-            _capacity += toAllocate;
             _blockCount = blockCount;
+            _capacity = capacity;
         }
     }
 }

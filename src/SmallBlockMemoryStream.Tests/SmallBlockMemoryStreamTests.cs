@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Security.Principal;
 using Aethon.IO;
 using FluentAssertions;
+using FluentAssertions.Equivalency;
 using NUnit.Framework;
 
 namespace Tests
@@ -37,169 +38,103 @@ namespace Tests
             return data;
         }
 
-        // Generate the expected allocations for a given set of writes
-        // (these functions know a lot about how the subject is managing its internals,
-        //  but since the internal performance is critical to the value of the subject
-        //  we accept the risk)
-        private static int[] AllocationsForWrites(params int[] writes)
-        {
-            var capacity = 0L;
-            return AllocationsForRequirements(writes.Select(x => capacity = capacity + x).ToArray());
-        }
-
-        // Generate the expected allocations for a given set of capacity requirements
-        private static int[] AllocationsForRequirements(params long[] required)
-        {
-            if (required == null || required.Length == 0)
-                return NoAllocations;
-
-            var result = new List<int>();
-            var capacity = 0;
-            var nextSizeBreak = SmallBlockMemoryStream.StartBlockCount;
-            foreach (var req in required)
-            {
-                while (capacity < req)
-                {
-                    var desired = Math.Max(SmallBlockMemoryStream.MinBlockSize, Math.Max(capacity * 2, req) - capacity);
-                    var alloc = (int)Math.Min(SmallBlockMemoryStream.MaxBlockSize, desired);
-                    capacity += alloc;
-                    result.Add(alloc);
-                    if (result.Count > nextSizeBreak)
-                        nextSizeBreak *= 2;
-                }
-            }
-            if (result.Count > 0)
-                while (result.Count < nextSizeBreak)
-                    result.Add(-1);
-            return result.ToArray();
-        }
-
-        //private static readonly byte[] NoData = new byte[0];
-        //private static readonly byte[] SmallBlock = MakeTestData(SmallBlockMemoryStream.MinBlockSize - 1);
-        //private static readonly byte[] OneBlock = MakeTestData(SmallBlockMemoryStream.MinBlockSize);
-        //private static readonly byte[] BlockPlus = MakeTestData(SmallBlockMemoryStream.MinBlockSize + 1);
-        //private static readonly byte[] LargeBlock = MakeTestData(5000);
-        //private static readonly byte[] HugeData = MakeTestData(86000);
-
-
-        private static readonly byte[] TestData = MakeTestData(86000);
-        // private static readonly byte[] NoData = new byte[0];
+        private static readonly byte[] TestData = MakeTestData(1000000);
         private const int SmallBlockSize = SmallBlockMemoryStream.MinBlockSize - 1;
         private const int OneBlock = SmallBlockMemoryStream.MinBlockSize;
         private const int BlockPlus = SmallBlockMemoryStream.MinBlockSize + 1;
         private const int LargeBlock = 5000;
-        private const int HugeData = 86000;
 
-        private static FluentAssertions.Equivalency.EquivalencyAssertionOptions<SmallBlockMemoryStream> EqOpts(
-            FluentAssertions.Equivalency.EquivalencyAssertionOptions<SmallBlockMemoryStream> options)
+        private static EquivalencyAssertionOptions<SmallBlockMemoryStream> EqOpts(
+            EquivalencyAssertionOptions<SmallBlockMemoryStream> options)
         {
             return options.ExcludingMissingProperties();
         }
 
+        #region Construction
         [Test]
-        public void NewStream_isInTheCorrectState()
+        public void DefaultCtor_succeeds()
         {
-            var subject = new SmallBlockMemoryStream();
+            using (var standard = new MemoryStream())
+            using (var subject = new SmallBlockMemoryStream())
+                AssertEquivalent(standard, subject);
+        }
 
-            subject.ShouldBeEquivalentTo(new
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(500)]
+        [TestCase(10000)]
+        [TestCase(1000000)]
+        public void CtorWithCapacity_succeeds(int capacity)
+        {
+            using (var standard = new MemoryStream(capacity))
+            using (var subject = new SmallBlockMemoryStream(capacity))
+                AssertEquivalent(standard, subject);
+        }
+
+        [Test]
+        public void CtorWithCapacity_WithBadParameter_throws()
+        {
+            ((Action)(() => new MemoryStream(-1))).ShouldThrow<ArgumentOutOfRangeException>();
+            ((Action)(() => new SmallBlockMemoryStream(-1))).ShouldThrow<ArgumentOutOfRangeException>();
+        }
+        #endregion
+
+        #region Capacity
+        [Test]
+        public void SetCapacity_WithBadValue_Throws()
+        {
+            VerifyThrows<ArgumentOutOfRangeException>(s =>
             {
-                CanRead = true,
-                CanSeek = true,
-                CanWrite = true,
-                Length = 0,
-                Position = 0
-            }, EqOpts);
-            subject.GetAllocationSizes().ShouldBeEquivalentTo(NoAllocations);
-        }
+                s.Write(TestData, 0, 100);
 
-        //[Test]
-        //public void Read_OnANewStream_Returns0()
-        //{
-        //    TestWrite(s => { },
-        //        (Stream s, out byte[] b) =>
-        //        {
-        //            b = new byte[1];
-        //            return s.Read(b, 0, 1);
-        //        });
-        //}
-
-        //private static void TestWrites(params byte[][] data)
-        //{
-        //    var subject = new SmallBlockMemoryStream();
-
-        //    var length = 0;
-        //    int[] expectedAllocations = NoAllocations;
-        //    for (var i = 0; i < data.Length; i++)
-        //    {
-        //        var d = data[i];
-        //        subject.Write(d, 0, d.Length);
-        //        length += d.Length;
-
-        //        expectedAllocations = AllocationsForWrites(data.Take(i + 1).Select(x => x.Length).ToArray());
-        //        subject.ShouldBeEquivalentTo(new
-        //        {
-        //            Length = length,
-        //            Position = length,
-        //            Allocations = expectedAllocations
-        //        }, EqOpts);
-        //    }
-
-        //    subject.Position = 0;
-        //    subject.ShouldBeEquivalentTo(new
-        //    {
-        //        Length = length,
-        //        Position = 0,
-        //        Allocations = expectedAllocations
-        //    }, EqOpts);
-
-        //    var buffer = new byte[length];
-        //    subject.Read(buffer, 0, length).Should().Be(length);
-        //}
-
-        [Test]
-        public void WriteNothing_OnANewStream_DoesNothing()
-        {
-            VerifyAction(s => s.Write(TestData, 0, 0));
-        }
-
-        [Test]
-        public void Write_RequiringOneAllocationToAnEmptyStream_succeeds()
-        {
-            VerifyAction(s => s.Write(TestData, 0, SmallBlockSize));
-        }
-
-        [Test]
-        public void Write_RequiringExactlyOneBlockToAnEmptyStream_succeeds()
-        {
-            VerifyAction(s => s.Write(TestData, 0, OneBlock));
-        }
-
-        [Test]
-        public void Write_RequiringMultipleAllocationsToAnEmptyStream_succeeds()
-        {
-            VerifyAction(s => s.Write(TestData, 0, BlockPlus));
-        }
-
-        [Test]
-        public void Write_FromMiddleOfABlock_succeeds()
-        {
-            VerifyAction(s =>
-            {
-                s.Write(TestData, 0, SmallBlockSize);
-                s.Write(TestData, 0, SmallBlockSize);
+                CallSetCapacity(s, 10);
             });
         }
 
-        [Test]
-        public void Write_FromEndOfABlock_succeeds()
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(SmallBlockMemoryStream.MinBlockSize - 1)]
+        [TestCase(SmallBlockMemoryStream.MinBlockSize)]
+        [TestCase(SmallBlockMemoryStream.MinBlockSize + 1)]
+        [TestCase(5000)]
+        [TestCase(SmallBlockMemoryStream.MaxBlockSize - 1)]
+        [TestCase(SmallBlockMemoryStream.MaxBlockSize)]
+        [TestCase(SmallBlockMemoryStream.MaxBlockSize + 1)]
+        [TestCase(1000000)]
+        public void SetCapacity_WhenExpanding_Succeeds(int capacity)
+        {
+            VerifyAction(s => CallSetCapacity(s, capacity));
+        }
+
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(SmallBlockMemoryStream.MinBlockSize - 1)]
+        [TestCase(SmallBlockMemoryStream.MinBlockSize)]
+        [TestCase(SmallBlockMemoryStream.MinBlockSize + 1)]
+        [TestCase(5000)]
+        [TestCase(SmallBlockMemoryStream.MaxBlockSize - 1)]
+        [TestCase(SmallBlockMemoryStream.MaxBlockSize)]
+        [TestCase(SmallBlockMemoryStream.MaxBlockSize + 1)]
+        [TestCase(1000000)]
+        public void SetCapacity_WhenContracting_Succeeds(int capacity)
         {
             VerifyAction(s =>
             {
-                s.Write(TestData, 0, OneBlock);
-                s.Write(TestData, 0, SmallBlockSize);
+                CallSetCapacity(s, 2000000);
+
+                CallSetCapacity(s, capacity);
             });
         }
 
+        #endregion
+
+        #region Length
+        [Test]
+        public void SetLength_withBadValues_Throws()
+        {
+            VerifyThrows<ArgumentException>(s => s.SetLength(-10));
+        }
+        
         [Test]
         public void SetLength_OnANewStream_succeeds()
         {
@@ -207,21 +142,284 @@ namespace Tests
                 s.SetLength(5123)
             );
         }
-
-        [Test]
-        public void SetLength_whenGrowing_succeeds()
+ 
+        [TestCase(0, 0)]
+        [TestCase(0, 1)]
+        [TestCase(0, SmallBlockMemoryStream.MinBlockSize - 1)]
+        [TestCase(0, SmallBlockMemoryStream.MinBlockSize)]
+        [TestCase(0, SmallBlockMemoryStream.MinBlockSize + 1)]
+        [TestCase(0, 5000)]
+        [TestCase(0, SmallBlockMemoryStream.MaxBlockSize - 1)]
+        [TestCase(0, SmallBlockMemoryStream.MaxBlockSize)]
+        [TestCase(0, SmallBlockMemoryStream.MaxBlockSize + 1)]
+        [TestCase(0, 5000000)]
+        [TestCase(100000, 0)]
+        [TestCase(100000, 1)]
+        [TestCase(100000, SmallBlockMemoryStream.MinBlockSize - 1)]
+        [TestCase(100000, SmallBlockMemoryStream.MinBlockSize)]
+        [TestCase(100000, SmallBlockMemoryStream.MinBlockSize + 1)]
+        [TestCase(100000, 5000)]
+        [TestCase(100000, SmallBlockMemoryStream.MaxBlockSize - 1)]
+        [TestCase(100000, SmallBlockMemoryStream.MaxBlockSize)]
+        [TestCase(100000, SmallBlockMemoryStream.MaxBlockSize + 1)]
+        public void SetLength_succeeds(int from, int to)
         {
             VerifyAction(s =>
             {
-                s.Write(TestData, 0, 512);
-                s.SetLength(10000);
+                if (from > 0)
+                    s.Write(TestData, 0, from);
+                s.SetLength(to);
+            });
+        }
+
+        #endregion
+
+        #region Seek
+        [Test]
+        public void Seek_withBadParameters_fails()
+        {
+            var subject = new SmallBlockMemoryStream();
+            Action action = () => subject.Seek(0, (SeekOrigin)123);
+            action.ShouldThrow<ArgumentException>();
+        }
+
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(500)]
+        [TestCase(999)]
+        [TestCase(1000)]
+        [TestCase(1001)]
+        public void Seek_FromBeginning_Succeeds(long offset)
+        {
+            VerifyAction(s =>
+            {
+                s.Write(TestData, 0, 1000);
+                s.Seek(offset, SeekOrigin.Begin);
+            });
+        }
+
+        [TestCase(0)]
+        [TestCase(-1)]
+        [TestCase(-500)]
+        [TestCase(-999)]
+        [TestCase(-1000)]
+        public void Seek_FromEnd_Succeeds(long offset)
+        {
+            VerifyAction(s =>
+            {
+                s.Write(TestData, 0, 1000);
+                s.Seek(offset, SeekOrigin.End);
+            });
+        }
+
+        [TestCase(0)]
+        [TestCase(-1)]
+        [TestCase(-500)]
+        [TestCase(499)]
+        [TestCase(500)]
+        [TestCase(501)]
+        public void Seek_FromMiddle_Succeeds(long offset)
+        {
+            VerifyAction(s =>
+            {
+                s.Write(TestData, 0, 1000);
+                s.Position = 500;
+
+                s.Seek(offset, SeekOrigin.Current);
             });
         }
 
         [Test]
-        public void SetLength_RequiringLotsOfAllocations_succeeds()
+        public void Seek_FromBeginning_Throws()
         {
-            VerifyAction(s => s.SetLength(5000000));
+            VerifyThrows<IOException>(s =>
+            {
+                s.Write(TestData, 0, 1000);
+                s.Seek(-1, SeekOrigin.Begin);
+            });
+        }
+
+        [Test]
+        public void Seek_FromEnd_Throws()
+        {
+            VerifyThrows<IOException>(s =>
+            {
+                s.Write(TestData, 0, 1000);
+                s.Seek(-1001, SeekOrigin.End);
+            });
+        }
+
+        [Test]
+        public void Seek_FromMiddle_Throws()
+        {
+            VerifyThrows<IOException>(s =>
+            {
+                s.Write(TestData, 0, 1000);
+                s.Position = 500;
+
+                s.Seek(-501, SeekOrigin.Current);
+            });
+        }
+        #endregion
+
+        #region Flush
+        [Test]
+        public void Flush_doesNotFail()
+        {
+            new SmallBlockMemoryStream().Flush();
+        }
+        #endregion
+
+        #region Disposal
+
+        [Test]
+        public void Dispose_LeavesSafePropertiesInTheCorrectState()
+        {
+            var subject = new SmallBlockMemoryStream();
+
+            subject.Dispose();
+
+            subject.ShouldBeEquivalentTo(new
+            {
+                CanRead = false,
+                CanSeek = false,
+                CanWrite = false,
+            }, EqOpts);
+            subject.GetAllocationSizes().ShouldBeEquivalentTo(NoAllocations);
+        }
+
+        [Test]
+        public void Flush_AfterDispose_DoesNotThrow()
+        {
+            // Just to mimic the MemoryStream implementation
+            var standard = new MemoryStream();
+            standard.Dispose();
+            standard.Flush();
+            var subject = new SmallBlockMemoryStream();
+            subject.Dispose();
+            subject.Flush();
+        }
+
+        [Test]
+        public void AfterDispose_UnusableMethodsThrow()
+        {
+            var subject = new SmallBlockMemoryStream();
+            subject.Dispose();
+
+            long dummy;
+            var buffer = new byte[1];
+            var dummyTarget = new MemoryStream();
+            var actions = new Action[]
+            {
+                () => dummy = subject.Length,
+                () => subject.SetLength(0),
+                () => dummy = subject.Capacity,
+                () => subject.Capacity = 100,
+                () => dummy = subject.Position,
+                () => subject.Position = 0,
+                () => subject.Seek(0, SeekOrigin.Begin),
+                () => subject.Write(buffer, 0, 1),
+                () => subject.WriteByte(1),
+                () => CallWriteTo(subject, dummyTarget),
+                () => subject.Read(buffer, 0, 1),
+                () => subject.ReadByte()
+            };
+
+            foreach (var action in actions)
+                action.ShouldThrow<ObjectDisposedException>();
+        }
+        #endregion
+
+        #region Write
+        [Test]
+        public void Write_withBadParameters_fails()
+        {
+            var subject = new SmallBlockMemoryStream();
+            var data = MakeTestData(10);
+
+            Action action = () => subject.Write(null, 0, 0);
+            action.ShouldThrow<ArgumentException>();
+
+            action = () => subject.Write(data, -10, 0);
+            action.ShouldThrow<ArgumentException>();
+
+            action = () => subject.Write(data, 0, -10);
+            action.ShouldThrow<ArgumentException>();
+
+            action = () => subject.Write(data, 0, 20);
+            action.ShouldThrow<ArgumentException>();
+        }
+        
+        [TestCase(0, 0)]
+        [TestCase(SmallBlockSize, 0)]
+        [TestCase(SmallBlockSize, SmallBlockSize)]
+        [TestCase(SmallBlockSize, LargeBlock)]
+        [TestCase(OneBlock, 0)]
+        [TestCase(OneBlock, SmallBlockSize)]
+        [TestCase(OneBlock, OneBlock)]
+        [TestCase(OneBlock, BlockPlus)]
+        [TestCase(BlockPlus, 0)]
+        [TestCase(512, 1)] // exercises the doubling algorithm
+        [TestCase(SmallBlockSize, 1000000)] // exercises expansion of the block array
+        public void Write_succeeds(int first, int second)
+        {
+            VerifyAction(s =>
+            {
+                s.Write(TestData, 0, first);
+                if (second != 0)
+                    s.Write(TestData, 0, second);
+            });
+        }
+
+        [Test]
+        public void Write_AfterPosition_succeeds()
+        {
+            VerifyAction(s =>
+            {
+                s.Position = 10;
+                s.Write(TestData, 0, 100);
+            });
+        }
+
+        [Test]
+        public void WriteByte_succeeds()
+        {
+            VerifyAction(s =>
+            {
+                for (var i = 0; i < BlockPlus; i++)
+                    s.WriteByte(TestData[i]);
+            });
+        }
+
+        [Test]
+        public void WriteByte__AfterPosition_succeeds()
+        {
+            VerifyAction(s =>
+            {
+                s.Position = 10;
+                s.WriteByte(14);
+            });
+        }
+        #endregion
+
+        #region Read
+        [Test]
+        public void Read_withBadParameters_fails()
+        {
+            var subject = new SmallBlockMemoryStream();
+            var data = new byte[10];
+
+            Action action = () => subject.Read(null, 0, 0);
+            action.ShouldThrow<ArgumentException>();
+
+            action = () => subject.Read(data, -10, 0);
+            action.ShouldThrow<ArgumentException>();
+
+            action = () => subject.Read(data, 0, -10);
+            action.ShouldThrow<ArgumentException>();
+
+            action = () => subject.Read(data, 0, 20);
+            action.ShouldThrow<ArgumentException>();
         }
 
         [Test]
@@ -248,28 +446,29 @@ namespace Tests
         }
 
         [Test]
-        public void WriteByte_succeeds()
+        public void ReadPastEnd_succeedsWithCorrectReadLength()
         {
-            VerifyAction(s =>
-            {
-                for (var i = 0; i < BlockPlus; i++)
-                    s.WriteByte(TestData[i]);
-            });
+            const int dataLength = 100;
+            const int readLength = 110;
+            var writeData = MakeTestData(dataLength);
+            var subject = new SmallBlockMemoryStream();
+            subject.Write(writeData, 0, dataLength);
+            subject.Position = 0;
+            var readData = new byte[readLength];
+            var read = subject.Read(readData, 0, readLength);
+            Assert.AreEqual(writeData.Length, read);
         }
 
-
         [Test]
-        public void ReadByte_PastEndOfStream_succeeds()
+        public void Read_AfterPositionPastLength_succeds()
         {
-            using (var standard = new MemoryStream())
-            using (var subject = new SmallBlockMemoryStream())
+            VerifyResultsAreEqual(s =>
             {
-                standard.Write(TestData, 0, TestData.Length);
-                subject.Write(TestData, 0, TestData.Length);
-
-                for (var i = 0; i <= TestData.Length; i++)
-                    subject.ReadByte().Should().Be(standard.ReadByte());
-            }
+                s.Write(TestData, 0, 10);
+                s.Position = 20;
+                var buffer = new byte[10];
+                return s.Read(buffer, 0, 10);
+            });    
         }
 
         [Test]
@@ -288,368 +487,28 @@ namespace Tests
             }
         }
 
-        // TODO
-        //[Test]
-        //public void WriteASmallBlock_OnANewStream_CreatesASingleAllocation()
-        //{
-        //    var subject = new SmallBlockMemoryStream();
-
-        //    subject.Write(SmallBlock, 0, SmallBlock.Length);
-
-        //    subject.ShouldBeEquivalentTo(new
-        //    {
-        //        Length = SmallBlock.Length,
-        //        Position = SmallBlock.Length,
-        //        Allocations = AllocationsForWrites(SmallBlock.Length)
-        //    }, EqOpts);
-        //}
-
-        //[Test]
-        //public void WriteAMediumBlock_OnANewStream_CreatesASingleAllocation()
-        //{
-        //    var subject = new SmallBlockMemoryStream();
-
-        //    subject.Write(BlockPlus, 0, BlockPlus.Length);
-
-        //    subject.ShouldBeEquivalentTo(new
-        //    {
-        //        Length = BlockPlus.Length,
-        //        Position = BlockPlus.Length,
-        //        Allocations = AllocationsForWrites(BlockPlus.Length)
-        //    }, EqOpts);
-        //}
-
-        //[Test]
-        //public void WriteAHugeBlock_OnANewStream_CreatesNeededAllocations()
-        //{
-        //    var subject = new SmallBlockMemoryStream();
-
-        //    subject.Write(HugeData, 0, HugeData.Length);
-
-        //    subject.ShouldBeEquivalentTo(new
-        //    {
-        //        Length = HugeData.Length,
-        //        Position = HugeData.Length,
-        //        Allocations = AllocationsForWrites(HugeData.Length)
-        //    }, EqOpts);
-        //}
-
-        //[Test]
-        //public void Read_PastEnd_ReadsTheRestAndReturnsCorrectLength()
-        //{
-        //    var subject = new SmallBlockMemoryStream();
-
-        //    subject.Write(BlockPlus, 0, BlockPlus.Length);
-
-        //    subject.ShouldBeEquivalentTo(new
-        //    {
-        //        Length = BlockPlus.Length,
-        //        Position = BlockPlus.Length,
-        //        Allocations = AllocationsForWrites(BlockPlus.Length)
-        //    }, EqOpts);
-
-        //    subject.Position = 0;
-        //    var result = new byte[BlockPlus.Length + 1];
-        //    subject.Read(result, 0, result.Length).Should().Be(BlockPlus.Length);
-        //}
-
-        //[Test]
-        //public void WriteASmallBlock_WhilePositionedOnABoundary_CreatesNeededAllocation()
-        //{
-        //    var subject = new SmallBlockMemoryStream();
-        //    subject.Write(OneBlock, 0, OneBlock.Length);
-
-        //    subject.Write(SmallBlock, 0, SmallBlock.Length);
-
-        //    subject.ShouldBeEquivalentTo(new
-        //    {
-        //        Length = OneBlock.Length + SmallBlock.Length,
-        //        Position = OneBlock.Length + SmallBlock.Length,
-        //        Allocations = AllocationsForWrites(OneBlock.Length, SmallBlock.Length)
-        //    }, EqOpts);
-        //}
-
-        //[Test]
-        //public void WriteAHugeBlock_WhilePositionedOnABoundary_CreatesNeededAllocations()
-        //{
-        //    var subject = new SmallBlockMemoryStream();
-        //    subject.Write(OneBlock, 0, OneBlock.Length);
-
-        //    subject.Write(HugeData, 0, HugeData.Length);
-
-        //    subject.ShouldBeEquivalentTo(new
-        //    {
-        //        Length = OneBlock.Length + HugeData.Length,
-        //        Position = OneBlock.Length + HugeData.Length,
-        //        Allocations = AllocationsForWrites(OneBlock.Length, HugeData.Length)
-        //    }, EqOpts);
-        //}
-
-        //[Test]
-        //public void Read_Iteratively_Succeeds()
-        //{
-        //    var subject = new SmallBlockMemoryStream();
-
-        //    subject.Write(HugeData, 0, HugeData.Length);
-
-        //    subject.ShouldBeEquivalentTo(new
-        //    {
-        //        Length = HugeData.Length,
-        //        Position = HugeData.Length,
-        //        Allocations = AllocationsForWrites(HugeData.Length)
-        //    }, EqOpts);
-
-        //    subject.Position = 0;
-
-        //    var result = new byte[HugeData.Length];
-        //    var offset = 0;
-        //    const int readLength = 4096;
-        //    int read;
-        //    do
-        //    {
-        //        read = subject.Read(result, offset, readLength);
-        //        offset += read;
-        //    } while (read == readLength);
-
-        //    Assert.AreEqual(result, HugeData);
-        //}
-
         [Test]
-        public void Seek_BeyondEnd_Allocates()
+        public void ReadByte_PastEndOfStream_succeeds()
         {
-            var subject = new SmallBlockMemoryStream();
-
-            subject.Seek(1000, SeekOrigin.Begin);
-
-            subject.ShouldBeEquivalentTo(new
+            using (var standard = new MemoryStream())
+            using (var subject = new SmallBlockMemoryStream())
             {
-                Length = 1000,
-                Position = 1000,
-                Allocations = AllocationsForWrites(1000)
-            }, EqOpts);
+                standard.Write(TestData, 0, TestData.Length);
+                subject.Write(TestData, 0, TestData.Length);
+
+                for (var i = 0; i <= TestData.Length; i++)
+                    subject.ReadByte().Should().Be(standard.ReadByte());
+            }
         }
+        #endregion
 
-        [Test]
-        public void SetLength_withBadParameters_fails()
-        {
-            var subject = new SmallBlockMemoryStream();
-            Action action = () => subject.SetLength(-10);
-            action.ShouldThrow<ArgumentException>();
-        }
-
-
+        #region Position
         [Test]
         public void Position_withBadParameters_fails()
         {
             var subject = new SmallBlockMemoryStream();
             Action action = () => subject.Position = -10;
             action.ShouldThrow<ArgumentOutOfRangeException>();
-        }
-
-        [Test]
-        public void Seek_withBadParameters_fails()
-        {
-            var subject = new SmallBlockMemoryStream();
-            Action action = () => subject.Seek(0, (SeekOrigin)123);
-            action.ShouldThrow<ArgumentException>();
-        }
-
-        [Test]
-        public void Seek_FromBeginBeforeBegin_throws()
-        {
-            VerifyThrows<IOException>(s => s.Seek(-1, SeekOrigin.Begin));
-        }
-
-        [Test]
-        public void Seek_FromCurrentBeforeBegin_throws()
-        {
-            VerifyThrows<IOException>(s => s.Seek(-1, SeekOrigin.Current));
-        }
-
-        [Test]
-        public void Seek_FromEndBeforeBegin_throws()
-        {
-            VerifyThrows<IOException>(s => s.Seek(-1, SeekOrigin.End));
-        }
-
-        [Test]
-        public void Read_withBadParameters_fails()
-        {
-            var subject = new SmallBlockMemoryStream();
-            var data = new byte[10];
-
-            Action action = () => subject.Read(null, 0, 0);
-            action.ShouldThrow<ArgumentException>();
-
-            action = () => subject.Read(data, -10, 0);
-            action.ShouldThrow<ArgumentException>();
-
-            action = () => subject.Read(data, 0, -10);
-            action.ShouldThrow<ArgumentException>();
-
-            action = () => subject.Read(data, 0, 20);
-            action.ShouldThrow<ArgumentException>();
-        }
-
-        [Test]
-        public void Write_withBadParameters_fails()
-        {
-            var subject = new SmallBlockMemoryStream();
-            var data = MakeTestData(10);
-
-            Action action = () => subject.Write(null, 0, 0);
-            action.ShouldThrow<ArgumentException>();
-
-            action = () => subject.Write(data, -10, 0);
-            action.ShouldThrow<ArgumentException>();
-
-            action = () => subject.Write(data, 0, -10);
-            action.ShouldThrow<ArgumentException>();
-
-            action = () => subject.Write(data, 0, 20);
-            action.ShouldThrow<ArgumentException>();
-        }
-
-        [Test]
-        public void Flush_doesNotFail()
-        {
-            new SmallBlockMemoryStream().Flush();
-        }
-
-        [Test]
-        public void WriteRead_forVariousLengths_succeeds()
-        {
-            var lengths = new[]
-            {
-                0, 16, 240, 256, 257, 400, 95000, 285000
-            };
-
-            foreach (var length in lengths)
-            {
-                WriteRead_succeeds(length, false);
-                WriteRead_succeeds(length, true);
-            };
-        }
-
-        public void WriteRead_succeeds(int length, bool prewrite)
-        {
-            var prelength = prewrite ? length : 0;
-            var nonce = MakeTestData(prelength);
-
-            var writeData = MakeTestData(length);
-
-            var subject = new SmallBlockMemoryStream();
-
-            if (prewrite)
-                subject.Write(nonce, 0, length);
-
-            var expectedAllocations = AllocationsForWrites(prelength, length);
-
-            subject.Write(writeData, 0, writeData.Length);
-            subject.ShouldBeEquivalentTo(new
-            {
-                Length = prelength + length,
-                Position = prelength + length,
-                Allocations = expectedAllocations
-            }, EqOpts);
-
-            subject.Position = prelength;
-            subject.ShouldBeEquivalentTo(new
-            {
-                Length = prelength + length,
-                Position = prelength,
-                Allocations = expectedAllocations
-            }, EqOpts);
-
-            var readData = new byte[length];
-            subject.Read(readData, 0, length);
-            subject.ShouldBeEquivalentTo(new
-            {
-                Length = prelength + length,
-                Position = prelength + length,
-                Allocations = expectedAllocations
-            }, EqOpts);
-
-            // fluent assertions are very slow using readData.Should().BeEquivalentTo(writeData);
-            //  => NUnit assertion here
-            Assert.AreEqual(readData, writeData);
-        }
-
-        [Test]
-        public void ReadPastEnd_succeedsWithCorrectReadLength()
-        {
-            const int dataLength = 100;
-            const int readLength = 110;
-            var writeData = MakeTestData(dataLength);
-            var subject = new SmallBlockMemoryStream();
-            subject.Write(writeData, 0, dataLength);
-            subject.Position = 0;
-            var readData = new byte[readLength];
-            var read = subject.Read(readData, 0, readLength);
-            Assert.AreEqual(writeData.Length, read);
-        }
-
-        [Test]
-        public void SetLength_whenShrinking_succeeds()
-        {
-            const int initialLength = 10000;
-            const int truncatedLength = 512;
-            var writeData = MakeTestData(initialLength);
-            var subject = new SmallBlockMemoryStream();
-            subject.Write(writeData, 0, initialLength);
-            subject.Length.Should().Be(initialLength);
-            subject.Position.Should().Be(initialLength);
-
-            subject.SetLength(truncatedLength);
-            subject.Length.Should().Be(truncatedLength);
-            subject.Position.Should().Be(truncatedLength);
-
-            subject.Position = 0;
-            var readData = new byte[initialLength];
-            subject.Read(readData, 0, initialLength);
-
-            Array.Clear(writeData, truncatedLength, initialLength - truncatedLength);
-            Assert.AreEqual(readData, writeData);
-        }
-
-        [Test]
-        public void Seeking_succeeds()
-        {
-            const int length = 100;
-            VerifyAction(s =>
-            {
-                s.Write(TestData, 0, length);
-                s.Seek(0, SeekOrigin.Begin);
-            });
-            VerifyAction(s =>
-            {
-                s.Write(TestData, 0, length);
-                s.Seek(10, SeekOrigin.Begin);
-            });
-            VerifyAction(s =>
-            {
-                s.Write(TestData, 0, length);
-                s.Seek(0, SeekOrigin.End);
-            });
-            VerifyAction(s =>
-            {
-                s.Write(TestData, 0, length);
-                s.Seek(10, SeekOrigin.End);
-            });
-            VerifyAction(s =>
-            {
-                s.Write(TestData, 0, length);
-                s.Position = 50;
-
-                s.Seek(10, SeekOrigin.Current);
-            });
-            VerifyAction(s =>
-            {
-                s.Write(TestData, 0, length);
-                s.Position = 50;
-
-                s.Seek(-30, SeekOrigin.Current);
-            });
         }
 
         [Test]
@@ -661,6 +520,29 @@ namespace Tests
                 s.Position = 50;
             });
         }
+        #endregion
+
+        #region WriteTo
+        [Test]
+        public void WriteTo_WithNoStream_Throws()
+        {
+            VerifyThrows<ArgumentNullException>(s => CallWriteTo(s, null));
+        }
+
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(1000000)]
+        public void WriteTo_succeeds(int size)
+        {
+            VerifyResultsAreEqual(s =>
+            {
+                var target = new MemoryStream(size);
+                s.Write(TestData, 0, size);
+                CallWriteTo(s, target);
+                return target.GetBuffer();
+            });
+        }
+        #endregion
 
         private static void VerifyThrows<T>(Action<Stream> action) where T : Exception
         {
@@ -680,88 +562,91 @@ namespace Tests
                 action(standard);
                 action(subject);
 
-                // length and position should be identical to standard
-                subject.Length.Should().Be(standard.Length);
-                subject.Position.Should().Be(standard.Position);
-
-                // allocations should never exceed LOH limit
-                var allocationSizes = subject.GetAllocationSizes();
-                allocationSizes.Any(x => x > SmallBlockMemoryStream.MaxBlockSize)
-                    .Should().BeFalse();
-
-                // total allocation should be identical to the standard until the LOH limit
-                //  is exceeded...
-                if (subject.Length < SmallBlockMemoryStream.MaxBlockSize)
-                {
-                    allocationSizes.Sum(x => Math.Max(0, x))
-                        .Should().Be(standard.Capacity);
-                }
-                else
-                {
-                    // ... then it should be within one LOH unit of the standard allocation
-                    allocationSizes.Sum(x => Math.Max(0, x))
-                        .Should()
-                        .BeLessOrEqualTo((standard.Capacity % SmallBlockMemoryStream.MaxBlockSize + 1) *
-                                         SmallBlockMemoryStream.MaxBlockSize);
-                }
-
-                // contents of the stream should be identical to the standard
-                Assert.AreEqual(standard, subject);
+                AssertEquivalent(standard, subject);
             }
         }
 
-        #region Disposal
-
-        [Test]
-        public void Dispose_LeavesSafePropertiesInTheCorrectState()
+        private static void VerifyResultsAreEquivalent<T>(Func<Stream, T> func)
         {
-            var subject = new SmallBlockMemoryStream();
-
-            subject.Dispose();
-
-            subject.ShouldBeEquivalentTo(new
+            using (var standard = new MemoryStream())
+            using (var subject = new SmallBlockMemoryStream())
             {
-                CanRead = false,
-                CanSeek = false,
-                CanWrite = false,
-            }, EqOpts);
-            subject.GetAllocationSizes().ShouldBeEquivalentTo(NoAllocations);
+                func(standard).ShouldBeEquivalentTo(func(subject));
+
+                AssertEquivalent(standard, subject);
+            }
         }
 
-        [Test]
-        public void Flust_AfterDispose_DoesNotThrow()
+        private static void VerifyResultsAreEqual<T>(Func<Stream, T> func)
         {
-            // Just to mimic the MemoryStream implementation
-            var subject = new SmallBlockMemoryStream();
-            subject.Dispose();
-
-            subject.Flush();
-        }
-
-        [Test]
-        public void AfterDispose_UnusableMethodsThrow()
-        {
-            var subject = new SmallBlockMemoryStream();
-            subject.Dispose();
-
-            long dummy;
-            var buffer = new byte[1];
-            var actions = new Action[]
+            using (var standard = new MemoryStream())
+            using (var subject = new SmallBlockMemoryStream())
             {
-                () => dummy = subject.Length,
-                () => subject.SetLength(0),
-                () => dummy = subject.Position,
-                () => subject.Position = 0,
-                () => subject.Seek(0, SeekOrigin.Begin),
-                () => subject.Write(buffer, 0, 1),
-                () => subject.WriteByte(1),
-                () => subject.Read(buffer, 0, 1),
-                () => subject.ReadByte()
-            };
+                Assert.AreEqual(func(standard), func(subject));
 
-            foreach (var action in actions)
-                action.ShouldThrow<ObjectDisposedException>();
+                AssertEquivalent(standard, subject);
+            }
         }
-        #endregion
+
+        private static void AssertEquivalent(MemoryStream standard, SmallBlockMemoryStream subject)
+        {
+            // length and position should be identical to standard
+            subject.Length.Should().Be(standard.Length);
+            subject.Position.Should().Be(standard.Position);
+
+            // allocations should never exceed LOH limit
+            var allocationSizes = subject.GetAllocationSizes();
+            allocationSizes.Any(x => x > SmallBlockMemoryStream.MaxBlockSize)
+                .Should().BeFalse();
+
+            // capacity should match allocations
+            var calculatedCapacity = allocationSizes.Sum(x => (long)Math.Max(0, x));
+            subject.Capacity.Should().Be(calculatedCapacity);
+
+            // total allocation should be identical to the standard until the LOH limit
+            //  is exceeded...
+            if (standard.Capacity < SmallBlockMemoryStream.MaxBlockSize)
+            {
+                calculatedCapacity.Should().Be(standard.Capacity);
+            }
+
+            // contents of the stream should be identical to the standard
+            Assert.AreEqual(standard, subject);
+        }
+
+        // Capacity and WriteTo are not part of any contract common to MS and SBMS => call these from within tests
+        //  to homogenize the action
+        private static void CallSetCapacity(Stream stream, int capacity)
+        {
+            var ms = stream as MemoryStream;
+            if (ms != null)
+            {
+                ms.Capacity = capacity;
+                return;
+            }
+            var sbms = stream as SmallBlockMemoryStream;
+            if (sbms != null)
+            {
+                sbms.Capacity = capacity;
+                return;
+            }
+            throw new ArgumentException("must be a MemoryStream or a SmallBlockMemoryStream", "stream");
+        }
+        private static void CallWriteTo(Stream stream, Stream target)
+        {
+            var ms = stream as MemoryStream;
+            if (ms != null)
+            {
+                ms.WriteTo(target);
+                return;
+            }
+            var sbms = stream as SmallBlockMemoryStream;
+            if (sbms != null)
+            {
+                sbms.WriteTo(target);
+                return;
+            }
+            throw new ArgumentException("must be a MemoryStream or a SmallBlockMemoryStream", "stream");
+        }
     }
 }
